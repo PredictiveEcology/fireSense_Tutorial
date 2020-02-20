@@ -87,6 +87,8 @@ references:
   URL: http://doi.wiley.com/10.1002/env.605
   DOI: 10.1002/env.605
   ISSN: '1180-4009'
+editor_options: 
+  chunk_output_type: console
 ---
 
 ## fireSense
@@ -117,14 +119,8 @@ This tutorial is intented to provide examples to run all fireSense modules witho
 
 ```{r setup, message=FALSE}
 
-library(dplyr)
-library(magrittr)
-library(PtProcess)
-library(raster)
-library(rgeos)
-library(sp)
-library(SpaDES)
-library(spatstat)
+library(reproducible)
+Require(c("magrittr", "dplyr", "PtProcess", "raster", "rgeos", "sp", "SpaDES", "spatstat"))
 
 options(reproducible.useCache = FALSE) # Turn off caching
 
