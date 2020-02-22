@@ -125,8 +125,8 @@ Require(c("magrittr", "dplyr", "PtProcess", "raster", "rgeos", "sp", "SpaDES", "
 options(reproducible.useCache = FALSE) # Turn off caching
 
 setPaths(
-  modulePath = normalizePath("D:/Jean/spades_modules"),
-  outputPath = file.path(tempdir(), "SpaDES", "outputs")
+  modulePath = normalizePath("../NWT/modules"),
+  outputPath = file.path("../NWT/outputs")
 )
 
 normalizeRaster <- function(x)
@@ -139,7 +139,7 @@ normalizeRaster <- function(x)
 
 ```{r create_data, message=FALSE}
 # Create a raster template describing the study area
-raster_width <- raster_height <- 1000
+raster_width <- raster_height <- 100
 r_template <- raster(matrix(nrow = raster_height, ncol = raster_width))
 
 # Create rasters describing environmental drivers controlling fire
@@ -147,7 +147,7 @@ r_template <- raster(matrix(nrow = raster_height, ncol = raster_width))
 
 set.seed(123)
 
-## Landcover
+## Landcover -- these should be "proportion of that single cover type", e.g., Proportion Deciduous
 landTypeOne <- gaussMap(r_template, scale = 300, var = 300)
 landTypeOne <- normalizeRaster(landTypeOne)
 landTypeTwo <- 1 - landTypeOne
@@ -172,31 +172,49 @@ nbFires <- 500
 fireLocations <- rpoint(nbFires, f = function(x, y, ...) 300 * y) # Introduce some spatial variability: more fires in the North
 fireLocations <- as(fireLocations, "SpatialPoints")
 
-landcoverDataLowRes <- extract(landTypeOneLowRes, fireLocations, cellnumbers = TRUE) %>%
-  as_tibble %>%
-  rename(cell_id = 1, landtype_1_pp = 2) %>% # Rename columns using column index
-  distinct(cell_id, landtype_1_pp) %>%
-  mutate(landtype_2_pp = 1 - landtype_1_pp)  # Add a column with the 2nd landcover type
+#landcoverDataLowRes <- extract(landTypeOneLowRes, fireLocations, cellnumbers = TRUE) %>%
+#  as_tibble %>%
+#  rename(cell_id = 1, landtype_1_pp = 2) %>% # Rename columns using column index
+#  distinct(cell_id, landtype_1_pp) %>%
+#  mutate(landtype_2_pp = 1 - landtype_1_pp)  # Add a column with the 2nd landcover type
 
-weatherDataLowRes <- extract(weatherLowRes, fireLocations, cellnumbers = TRUE) %>%
-  as_tibble %>% 
-  rename(cell_id = 1, weather = 2) %>% # Rename columns using column index
-  distinct(cell_id, weather)
+#weatherDataLowRes <- extract(weatherLowRes, fireLocations, cellnumbers = TRUE) %>%
+#  as_tibble %>% 
+#  rename(cell_id = 1, weather = 2) %>% # Rename columns using column index
+#  distinct(cell_id, weather)
 
 # Create the dataset necessary to fit the statistical model of fire ignitions
-dataFireSense_IgnitionFit <- landcoverDataLowRes %>%
-  group_by(cell_id) %>%
-  summarise(n_fires = n()) %>%
-  right_join(landcoverDataLowRes) %>%
-  left_join(weatherDataLowRes) %>%
+#dataFireSense_IgnitionFit <- landcoverDataLowRes %>%
+#  group_by(cell_id) %>%
+#  summarise(n_fires = n()) %>%
+#  right_join(landcoverDataLowRes) %>%
+#  left_join(weatherDataLowRes) %>%
   mutate(n_fires = ifelse(is.na(n_fires), 0, n_fires))
 
+# Converting the above from tibble to data.table 
+dataFireSense_IgnitionFit <- data.table(
+  extract(landTypeOneLowRes, fireLocations, cellnumbers = TRUE),
+  landtype_2_pp = extract(landTypeTwoLowRes, fireLocations, cellnumbers = FALSE),
+  weather = extract(weatherLowRes, fireLocations, cellnumbers = FALSE)
+  )
+setnames(dataFireSense, old = "layer", new = "landtype_1_pp")
+dataFireSense_IgnitionFit <- dataFireSense[, list(
+  n_fires = .N, landtype_1_pp = landtype_1_pp[1], 
+  landtype_2_pp = landtype_2_pp[1], weather = weather[1]
+), by = cells]
+
+dataFireSense_EscapeFit <- data.table(
+  landtype_1_pp = extract(landTypeOne, fireLocations, cellnumbers = FALSE),
+  landtype_2_pp = extract(landTypeTwo, fireLocations, cellnumbers = FALSE),
+  weather = extract(weather, fireLocations, cellnumbers = FALSE)
+  )
+
 # Create the dataset necessary to fit the statistical model fire escapes
-dataFireSense_EscapeFit <- tibble(
-  landtype_1_pp = extract(landTypeOne, fireLocations),
-  landtype_2_pp = extract(landTypeTwo, fireLocations),
-  weather = extract(weather, fireLocations)
-)
+#dataFireSense_EscapeFit <- tibble(
+#  landtype_1_pp = extract(landTypeOne, fireLocations),
+#  landtype_2_pp = extract(landTypeTwo, fireLocations),
+#  weather = extract(weather, fireLocations)
+#)
 
 b1 <- .01
 b2 <- -1
@@ -205,7 +223,8 @@ b3 <- 1
 escapeProb <- with(dataFireSense_EscapeFit, binomial()$linkinv(weather * b1 + landtype_1_pp * b2 + landtype_2_pp * b3))
 escaped <- rbinom(n = nbFires, size = 1, prob = escapeProb)
 
-dataFireSense_EscapeFit <- mutate(dataFireSense_EscapeFit, escaped = escaped, n_fires = 1)
+dataFireSense_EscapeFit[, `:=`(escaped = escaped, n_fires = 1)]
+# dataFireSense_EscapeFit <- mutate(dataFireSense_EscapeFit, escaped = escaped, n_fires = 1)
 
 # Create the dataset necessary to fit the statistical model of the fire size distribution
 # Calculate mean landcover and weather conditions around the locations of escaped fires
@@ -223,7 +242,7 @@ weatherBufMn <- extract(weather, buf_around_loc_escaped) %>%
   lapply(mean) %>%
   unlist
 
-dataFireSense_SizeFit <- tibble(
+dataFireSense_SizeFit <- data.table(
   landtype_1_pp = landtypeTypeOneBufMn,
   landtype_2_pp = landtypeTypeTwoBufMn,
   weather = weatherBufMn
@@ -243,7 +262,8 @@ theta <- with(dataFireSense_SizeFit, exp(weather * b1_t + landtype_1_pp * b2_t +
 
 fireSize <- round(rtappareto(n = length(lambda), lambda = lambda, theta = theta, a = 1))
 
-dataFireSense_SizeFit <- mutate(dataFireSense_SizeFit, fire_size = fireSize)
+dataFireSense_SizeFit[, fire_size := fireSize]
+# dataFireSense_SizeFit <- mutate(dataFireSense_SizeFit, fire_size = fireSize)
 
 # Create the fire attribute dataset that describes the starting locations 
 # and the size of the fires to be spread. This is needed to fit the statistical model of spread probabilities
@@ -267,10 +287,10 @@ formula <- formula(n_fires ~ landtype_1_pp:weather + landtype_2_pp:weather - 1)
 family <- poisson(link = "identity")
 ub <- list(coef = 1)
 dataObjName <- "dataFireSense_IgnitionFit"
-trace <- 10
-iterDEoptim <- 200
+trace <- 1
+iterDEoptim <- 60
 iterNlminb <- 100  
-cores <- 1
+cores <- 50
 
 parameters <- list(
   fireSense_IgnitionFit = list(
